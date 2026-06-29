@@ -1,0 +1,31 @@
+{
+  "name": "trailwise",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "apps/backend",
+    "apps/chrome-extension",
+    "apps/demo-site",
+    "apps/dev-helper"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "tsc -b",
+    "test": "npm run test --workspaces --if-present",
+    "validate": "npm run validate -w @trailwise/shared",
+    "dev:backend": "npm run dev -w @trailwise/backend",
+    "slack:check": "npm run slack:check -w @trailwise/backend",
+    "simulate:backend": "npm run simulate -w @trailwise/backend",
+    "dev:demo": "npm run dev -w @trailwise/demo-site",
+    "dev:helper": "npm run run -w @trailwise/dev-helper",
+    "helper:build": "cd apps/macos-helper && ./scripts/build.sh",
+    "helper:run": "cd apps/macos-helper && .build/debug/workflow-recorder-helper run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.7",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}

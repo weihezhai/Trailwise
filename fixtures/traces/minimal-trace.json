@@ -1,0 +1,35 @@
+{
+  "schema_version": "0.1",
+  "session_id": "sess_abc123",
+  "platform": "macos",
+  "browser": "chrome",
+  "started_at": "2026-06-28T12:00:00Z",
+  "target_url": "http://localhost:5173",
+  "events": [
+    {
+      "seq": 1,
+      "type": "session_started",
+      "ts": 0,
+      "url": "http://localhost:5173",
+      "title": "Trailwise Demo"
+    },
+    {
+      "seq": 2,
+      "type": "click",
+      "ts": 1200,
+      "url": "http://localhost:5173",
+      "selector": "[data-testid=\"create-account\"]",
+      "text": "Create account"
+    },
+    {
+      "seq": 3,
+      "type": "input",
+      "ts": 1800,
+      "url": "http://localhost:5173",
+      "selector": "input[name=\"email\"]",
+      "label": "Email",
+      "value_policy": "synthetic",
+      "value": "process.env.TEST_EMAIL"
+    }
+  ]
+}

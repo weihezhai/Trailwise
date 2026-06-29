@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Trailwise Workflow Recorder",
+  "version": "0.1.0",
+  "description": "Records allowlisted Chrome workflows for local Trailwise traces.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "nativeMessaging",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://demo.yourapp.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "https://demo.yourapp.com/*"
+      ],
+      "js": [
+        "recorder-utils.js",
+        "content-script.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

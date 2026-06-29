@@ -1,0 +1,19 @@
+{
+  "name": "@trailwise/shared",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test src/*.test.ts",
+    "validate": "tsx scripts/validate-fixtures.ts"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@trailwise/dev-helper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "trailwise-dev-helper": "./dist/cli.js",
+    "trailwise-dev-native-host": "./dist/native-host.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js dist/native-host.js",
+    "cli": "tsx src/cli.ts",
+    "run": "tsx src/cli.ts run",
+    "test": "node --import tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@trailwise/shared": "0.1.0"
+  }
+}
