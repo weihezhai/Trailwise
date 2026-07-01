@@ -77,10 +77,11 @@ export class TraceStore {
     if (!this.urlAllowed(input.url, active.target_url)) return undefined;
 
     const trace = this.readTrace(active);
+    const ts = normalizeTimestamp(input.ts, trace.started_at);
     const event = sanitizeEvent({
       seq: trace.events.length + 1,
       type: input.type ?? "click",
-      ts: input.ts ?? elapsedMs(trace.started_at),
+      ts,
       url: input.url,
       title: input.title,
       selector: input.selector,
@@ -102,13 +103,16 @@ export class TraceStore {
     return event;
   }
 
-  finalize(cancelled = false): SessionSummary {
+  finalize(cancelled = false, options: { videoPath?: string } = {}): SessionSummary {
     const active = this.activeSession();
     if (!active) throw new Error("No active session to finalize");
     const trace = this.readTrace(active);
     const duration = elapsedMs(trace.started_at);
     trace.stopped_at = new Date().toISOString();
     trace.duration_ms = duration;
+    if (options.videoPath) {
+      trace.video_path = options.videoPath;
+    }
     trace.events.push({
       seq: trace.events.length + 1,
       type: cancelled ? "session_cancelled" : "session_stopped",
@@ -127,7 +131,8 @@ export class TraceStore {
       events_count: trace.events.filter((event) => !["session_started", "session_stopped", "session_cancelled"].includes(event.type)).length,
       screenshots_count: trace.events.filter((event) => event.screenshot).length,
       redactions_count: trace.events.filter((event) => event.value_policy === "redacted").length,
-      trace_path: this.tracePath(active)
+      trace_path: this.tracePath(active),
+      video_path: options.videoPath
     };
   }
 
@@ -203,6 +208,12 @@ function shouldCapture(event: TraceEvent): boolean {
 
 function elapsedMs(startedAt: string): number {
   return Math.max(0, Date.now() - Date.parse(startedAt));
+}
+
+function normalizeTimestamp(ts: number | undefined, startedAt: string): number {
+  if (typeof ts !== "number") return elapsedMs(startedAt);
+  if (ts > 1_000_000_000_000) return Math.max(0, ts - Date.parse(startedAt));
+  return ts;
 }
 
 function lastUrl(trace: WorkflowTrace): string {

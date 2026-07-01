@@ -63,6 +63,11 @@ export class BackendClient {
   private async parse(response: Response): Promise<unknown> {
     const text = await response.text();
     if (!response.ok) throw new Error(`Backend request failed ${response.status}: ${text}`);
-    return text ? JSON.parse(text) : {};
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`Backend returned non-JSON response from ${response.url}: ${text.slice(0, 200)}`);
+    }
   }
 }

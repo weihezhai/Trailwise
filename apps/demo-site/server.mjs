@@ -1,9 +1,11 @@
 import http from "node:http";
-import { readFileSync } from "node:fs";
-import { extname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { extname, join, normalize, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const port = Number(process.env.DEMO_SITE_PORT || 5173);
-const root = new URL(".", import.meta.url);
+const root = fileURLToPath(new URL(".", import.meta.url));
+const repoRoot = resolve(root, "../..");
 
 const types = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -14,10 +16,12 @@ const types = new Map([
 http
   .createServer((request, response) => {
     const url = new URL(request.url || "/", `http://localhost:${port}`);
-    const path = url.pathname === "/" ? "/index.html" : url.pathname;
+    const path = routePath(url.pathname);
     try {
-      const file = readFileSync(join(root.pathname, path));
-      response.writeHead(200, { "Content-Type": types.get(extname(path)) || "application/octet-stream" });
+      const absolutePath = resolve(path.root, normalize(`.${path.pathname}`));
+      if (!absolutePath.startsWith(path.root)) throw new Error("invalid path");
+      const file = readFileSync(absolutePath);
+      response.writeHead(200, { "Content-Type": types.get(extname(path.pathname)) || "application/octet-stream" });
       response.end(file);
     } catch {
       response.writeHead(404);
@@ -26,4 +30,22 @@ http
   })
   .listen(port, () => {
     console.log(`Trailwise demo site running at http://localhost:${port}`);
+    if (expenseFlowPath()) {
+      console.log(`Expense flow demo running at http://localhost:${port}/expense-flow.html`);
+    }
   });
+
+function routePath(pathname) {
+  if (pathname === "/expense-flow.html" || pathname === "/expenseflow_1.html") {
+    const expensePath = expenseFlowPath();
+    if (!expensePath) return { root: repoRoot, pathname: "/expense-flow.html" };
+    return { root: repoRoot, pathname: `/${expensePath}` };
+  }
+  return { root, pathname: pathname === "/" ? "/index.html" : pathname };
+}
+
+function expenseFlowPath() {
+  if (existsSync(join(repoRoot, "expense-flow.html"))) return "expense-flow.html";
+  if (existsSync(join(repoRoot, "expenseflow_1.html"))) return "expenseflow_1.html";
+  return undefined;
+}

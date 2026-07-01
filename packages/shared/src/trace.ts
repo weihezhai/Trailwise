@@ -62,6 +62,7 @@ export interface WorkflowTrace {
   target_url: string;
   stopped_at?: string;
   duration_ms?: number;
+  video_path?: string;
   redacted_values?: RedactedValueHint[];
   events: TraceEvent[];
 }
@@ -75,6 +76,8 @@ export interface SessionSummary {
   screenshots_count: number;
   redactions_count: number;
   trace_path?: string;
+  video_path?: string;
+  skill_path?: string;
 }
 
 export const SENSITIVE_FIELD_PATTERN =

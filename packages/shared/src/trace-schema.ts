@@ -14,6 +14,7 @@ export const traceSchema: JSONSchemaType<WorkflowTrace> = {
     target_url: { type: "string", minLength: 1 },
     stopped_at: { type: "string", nullable: true },
     duration_ms: { type: "number", nullable: true },
+    video_path: { type: "string", nullable: true },
     redacted_values: {
       type: "array",
       nullable: true,

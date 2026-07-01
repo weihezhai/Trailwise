@@ -18,6 +18,9 @@
     const testId = el.getAttribute("data-testid");
     if (testId) return attrSelector("data-testid", testId);
 
+    const dataId = el.getAttribute("data-id");
+    if (dataId) return attrSelector("data-id", dataId);
+
     if (el.id && !SENSITIVE_PATTERN.test(el.id)) return `#${cssEscape(el.id)}`;
 
     const aria = el.getAttribute("aria-label");
@@ -30,6 +33,27 @@
     if (placeholder) return `${el.tagName.toLowerCase()}${attrSelector("placeholder", placeholder)}`;
 
     return el.tagName.toLowerCase();
+  }
+
+  function interactiveTargetFor(el) {
+    if (!el || !el.closest) return el;
+    return (
+      el.closest(
+        [
+          "button",
+          "a[href]",
+          "input",
+          "textarea",
+          "select",
+          "summary",
+          "[role]",
+          "[data-testid]",
+          "[data-id]",
+          "[onclick]",
+          "[tabindex]"
+        ].join(",")
+      ) || el
+    );
   }
 
   function labelFor(el) {
@@ -65,7 +89,7 @@
       selector: selectorFor(el),
       text: textFor(el),
       ariaLabel: el.getAttribute("aria-label"),
-      role: el.getAttribute("role"),
+      role: el.getAttribute("role") || implicitRoleFor(el),
       type: el.getAttribute("type"),
       name: el.getAttribute("name"),
       id: el.id || null,
@@ -73,6 +97,22 @@
       label: labelFor(el),
       boundingClientRect: rectFor(el)
     };
+  }
+
+  function implicitRoleFor(el) {
+    const tag = el.tagName?.toLowerCase();
+    if (tag === "button") return "button";
+    if (tag === "a" && el.getAttribute("href")) return "link";
+    if (tag === "input") {
+      const type = (el.getAttribute("type") || "text").toLowerCase();
+      if (["button", "submit", "reset"].includes(type)) return "button";
+      if (["checkbox"].includes(type)) return "checkbox";
+      if (["radio"].includes(type)) return "radio";
+      return "textbox";
+    }
+    if (tag === "textarea") return "textbox";
+    if (tag === "select") return "combobox";
+    return null;
   }
 
   function textFor(el) {
@@ -110,6 +150,7 @@
   global.TrailwiseRecorder = {
     SENSITIVE_PATTERN,
     selectorFor,
+    interactiveTargetFor,
     describeElement,
     isSensitiveElement,
     normalizeInputValue

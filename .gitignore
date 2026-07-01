@@ -14,6 +14,7 @@ npm-debug.log*
 *.tsbuildinfo
 
 .trailwise-data/
+.trailwise-*/
 workflow-sess_*.zip
 
 .build/

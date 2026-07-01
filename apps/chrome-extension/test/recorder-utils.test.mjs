@@ -29,7 +29,7 @@ function element(attrs = {}, tagName = "INPUT") {
       return attrs[name] ?? null;
     },
     closest() {
-      return null;
+      return attrs.closestReturn || null;
     },
     getBoundingClientRect() {
       return { x: 1, y: 2, width: 3, height: 4, top: 2, right: 4, bottom: 6, left: 1 };
@@ -40,6 +40,25 @@ function element(attrs = {}, tagName = "INPUT") {
 test("selectorFor prefers data-testid", () => {
   const utils = loadUtils();
   assert.equal(utils.selectorFor(element({ "data-testid": "create-account", id: "x" }, "BUTTON")), '[data-testid="create-account"]');
+});
+
+test("selectorFor uses data-id for dynamic queue rows", () => {
+  const utils = loadUtils();
+  assert.equal(utils.selectorFor(element({ "data-id": "EXP-4821" }, "DIV")), '[data-id="EXP-4821"]');
+});
+
+test("describeElement includes implicit button role", () => {
+  const utils = loadUtils();
+  const described = utils.describeElement(element({ textContent: "Approve" }, "BUTTON"));
+  assert.equal(described.role, "button");
+  assert.equal(described.text, "Approve");
+});
+
+test("interactiveTargetFor climbs to clickable parent", () => {
+  const utils = loadUtils();
+  const row = element({ "data-id": "EXP-4821" }, "DIV");
+  const child = element({ textContent: "Sarah Chen", closestReturn: row }, "DIV");
+  assert.equal(utils.interactiveTargetFor(child), row);
 });
 
 test("redacts password fields", () => {

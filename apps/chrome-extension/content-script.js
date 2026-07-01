@@ -28,7 +28,8 @@
   document.addEventListener(
     "click",
     (event) => {
-      const element = utils.describeElement(event.target);
+      const target = utils.interactiveTargetFor(event.target);
+      const element = utils.describeElement(target);
       sendEvent({
         type: "click",
         selector: element?.selector || null,
@@ -44,8 +45,9 @@
   document.addEventListener(
     "input",
     (event) => {
-      const element = utils.describeElement(event.target);
-      const value = utils.normalizeInputValue(event.target);
+      const target = utils.interactiveTargetFor(event.target);
+      const element = utils.describeElement(target);
+      const value = utils.normalizeInputValue(target);
       sendEvent({
         type: "input",
         selector: element?.selector || null,
@@ -61,7 +63,8 @@
   document.addEventListener(
     "submit",
     (event) => {
-      const element = utils.describeElement(event.target);
+      const target = utils.interactiveTargetFor(event.target);
+      const element = utils.describeElement(target);
       sendEvent({
         type: "submit",
         selector: element?.selector || null,

@@ -3,6 +3,7 @@
   "name": "Trailwise Workflow Recorder",
   "version": "0.1.0",
   "description": "Records allowlisted Chrome workflows for local Trailwise traces.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzioXzyaUEcfnkO0VxuA45qAfRHv+WARa/bS986tnz4lWGoGwoto9v5JTyflFgR2TuatD480hA2tYRSs5wGHEO+KwnN4qvK9lFWFKP+Buq88OZsr7iNc/YikJvyIXAqpi5eqTeHmZmMKM5acroO4Axq6ID7fsgGchNdqG/OQBEio9ssi5LnVtDdaTV6f4bnt98CD8UhqSRvaQ6HmXq383hoF+2TnqeSGnEPvCHLb7zQfrjA/NO+dHSCH3mZH5mdxwc603uOxKwjvT7a1vvpptAU1h9T6morkGayZkk3u8X8fQ+WNvAckH52kgymjOepQPCPshfVPO8+NW1/BIYMjccQIDAQAB",
   "permissions": [
     "activeTab",
     "scripting",

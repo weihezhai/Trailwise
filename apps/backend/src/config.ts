@@ -29,8 +29,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BackendConfig 
   mkdirSync(dataDir, { recursive: true });
 
   return {
-    port: Number(mergedEnv.BACKEND_PORT || 3000),
-    backendBaseUrl: mergedEnv.BACKEND_BASE_URL || "http://localhost:3000",
+    port: Number(mergedEnv.BACKEND_PORT || 3100),
+    backendBaseUrl: mergedEnv.BACKEND_BASE_URL || "http://localhost:3100",
     slackBotToken: mergedEnv.SLACK_BOT_TOKEN || undefined,
     slackSigningSecret: mergedEnv.SLACK_SIGNING_SECRET || undefined,
     slackTestChannelId: mergedEnv.SLACK_TEST_CHANNEL_ID || undefined,

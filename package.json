@@ -20,8 +20,12 @@
     "simulate:backend": "npm run simulate -w @trailwise/backend",
     "dev:demo": "npm run dev -w @trailwise/demo-site",
     "dev:helper": "npm run run -w @trailwise/dev-helper",
+    "dev:helper:capture": "TRAILWISE_BROWSER_CAPTURE=1 npm run cli -w @trailwise/dev-helper -- capture-next",
+    "helper:install-native-host": "npm run build -w @trailwise/dev-helper && npm run cli -w @trailwise/dev-helper -- install-native-host",
     "helper:build": "cd apps/macos-helper && ./scripts/build.sh",
-    "helper:run": "cd apps/macos-helper && .build/debug/workflow-recorder-helper run"
+    "helper:run": "cd apps/macos-helper && .build/debug/workflow-recorder-helper run",
+    "replay:latest": "npm run cli -w @trailwise/dev-helper -- replay-latest",
+    "replay:skill": "npm run cli -w @trailwise/dev-helper -- replay-skill"
   },
   "devDependencies": {
     "@types/node": "^24.0.7",

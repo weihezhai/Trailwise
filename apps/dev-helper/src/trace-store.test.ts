@@ -13,7 +13,16 @@ function config(dataDir: string): DevHelperConfig {
     deviceId: "device",
     deviceName: "Device",
     dataDir,
-    screenshotsEnabled: false
+    screenshotsEnabled: false,
+    extensionId: "extension",
+    chromeLoadExtension: false,
+    chromeUserDataDir: join(dataDir, "chrome"),
+    chromeExtensionDir: join(dataDir, "extension"),
+    browserCaptureEnabled: false,
+    browserChannel: "chromium",
+    browserHeadless: true,
+    browserSlowMo: 0,
+    browserRemoteDebuggingPort: undefined
   };
 }
 

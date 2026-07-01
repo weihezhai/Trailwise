@@ -3,15 +3,32 @@ import { join } from "node:path";
 import type { SessionSummary } from "@trailwise/shared";
 import { isAllowedRecordingUrl } from "./allowlist.js";
 import type { BackendConfig } from "./config.js";
-import { generatePlaywrightArtifact, generateRunbookArtifact } from "./generation.js";
+import { generatePlaywrightArtifact, generateRunbookArtifact, generateSkillArtifact } from "./generation.js";
 import { postSlackMessage, slackText, verifySlackSignature } from "./slack.js";
 import { createStore, type JsonStore } from "./store.js";
+import { appendRecordedEvent } from "./trace-recorder.js";
 
 export function createServer(config: BackendConfig, store: JsonStore = createStore(config.dataDir)) {
   const app = express();
 
   app.get("/health", (_request, response) => {
     response.json({ ok: true });
+  });
+
+  app.post("/record/events", express.json({ limit: "64kb" }), (request, response) => {
+    const url = String(request.body?.event?.url || "");
+    const session = store.findLatestRecordingForUrl(url);
+    if (!session) {
+      response.status(409).json({ ok: false, reason: "no active recording for event origin" });
+      return;
+    }
+
+    try {
+      const event = appendRecordedEvent(config, session, request.body.event);
+      response.json({ ok: true, session_id: session.session_id, seq: event.seq });
+    } catch (error) {
+      response.status(400).json({ ok: false, error: String(error) });
+    }
   });
 
   app.post("/slack/commands", express.raw({ type: "application/x-www-form-urlencoded" }), async (request, response) => {
@@ -101,6 +118,36 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
         });
 
       response.json(slackText("Runbook generation started. I will post the result when it is ready."));
+      return;
+    }
+
+    if (action?.action_id === "generate_skill") {
+      const session = action.value ? store.getSession(action.value) : store.findLatestCompletedForSlackUser(payload.team?.id || "", payload.user?.id || "");
+      if (!session) {
+        response.json(slackText("No completed recording is available for skill generation."));
+        return;
+      }
+
+      store.updateSession(session.session_id, { generation_requested_at: new Date().toISOString() });
+      void generateSkillArtifact(session, config)
+        .then(async (result) => {
+          store.updateSession(session.session_id, { generated_skill_path: result.artifactPath });
+          await postSlackMessage({
+            token: config.slackBotToken,
+            channel: payload.channel?.id || session.slack_channel_id,
+            text: `Generated Codex skill for ${session.session_id}: ${result.artifactPath}`
+          });
+        })
+        .catch(async (error) => {
+          store.updateSession(session.session_id, { error: String(error) });
+          await postSlackMessage({
+            token: config.slackBotToken,
+            channel: payload.channel?.id || session.slack_channel_id,
+            text: `Skill generation failed for ${session.session_id}: ${String(error)}`
+          });
+        });
+
+      response.json(slackText("Skill generation started. I will post the result when it is ready."));
       return;
     }
 
@@ -197,6 +244,13 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
     response.json(result);
   });
 
+  app.post("/sessions/:session_id/generate-skill", express.json(), async (request, response) => {
+    const session = store.getSession(request.params.session_id);
+    const result = await generateSkillArtifact(session, config);
+    store.updateSession(session.session_id, { generated_skill_path: result.artifactPath });
+    response.json(result);
+  });
+
   app.post("/dev/slack-command", express.json(), async (request, response) => {
     const result = await handleSlashCommand({
       text: String(request.body?.text || ""),
@@ -283,12 +337,21 @@ Session: ${session.session_id}`);
     return slackText(`Generated runbook: ${result.artifactPath}`);
   }
 
+  if (command === "generate-skill") {
+    const session = options.store.findLatestCompletedForSlackUser(options.teamId, options.userId);
+    if (!session) return slackText("No completed recording is available for skill generation.");
+    const result = await generateSkillArtifact(session, options.config);
+    options.store.updateSession(session.session_id, { generated_skill_path: result.artifactPath });
+    return slackText(`Generated Codex skill: ${result.artifactPath}`);
+  }
+
   return slackText(`Usage:
 /record-workflow start <target_url>
 /record-workflow stop
 /record-workflow status
 /record-workflow generate-test
-/record-workflow generate-runbook`);
+/record-workflow generate-runbook
+/record-workflow generate-skill`);
 }
 
 async function postCompletionSummary(config: BackendConfig, channel: string, summary: SessionSummary): Promise<void> {
@@ -332,6 +395,12 @@ function completionBlocks(summary: SessionSummary, text: string): unknown[] {
           type: "button",
           text: { type: "plain_text", text: "Generate runbook" },
           action_id: "generate_runbook",
+          value: summary.session_id
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Generate Codex skill" },
+          action_id: "generate_skill",
           value: summary.session_id
         },
         {

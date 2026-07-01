@@ -26,6 +26,7 @@ export interface RecordingSession {
   generation_requested_at?: string;
   generated_artifact_path?: string;
   generated_runbook_path?: string;
+  generated_skill_path?: string;
   summary?: SessionSummary;
   error?: string;
 }
@@ -90,6 +91,24 @@ export class JsonStore {
     return [...this.data.sessions]
       .reverse()
       .find((session) => session.slack_team_id === teamId && session.slack_user_id === userId && session.status === "completed");
+  }
+
+  findLatestRecordingForUrl(eventUrl: string): RecordingSession | undefined {
+    let parsed: URL;
+    try {
+      parsed = new URL(eventUrl);
+    } catch {
+      return undefined;
+    }
+
+    return [...this.data.sessions].reverse().find((session) => {
+      if (session.status !== "recording") return false;
+      try {
+        return new URL(session.target_url).origin === parsed.origin;
+      } catch {
+        return false;
+      }
+    });
   }
 
   listPendingForDevice(deviceId: string): RecordingSession[] {
