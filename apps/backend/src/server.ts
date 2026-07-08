@@ -1,15 +1,45 @@
 import express, { type Request, type Response } from "express";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { SessionSummary } from "@trailwise/shared";
+import type { SessionSummary, WorkflowTrace } from "@trailwise/shared";
 import { isAllowedRecordingUrl } from "./allowlist.js";
 import type { BackendConfig } from "./config.js";
 import { generatePlaywrightArtifact, generateRunbookArtifact, generateSkillArtifact } from "./generation.js";
 import { postSlackMessage, slackText, verifySlackSignature } from "./slack.js";
-import { createStore, type JsonStore } from "./store.js";
+import { createStore, type JsonStore, type RecordingSession } from "./store.js";
 import { appendRecordedEvent } from "./trace-recorder.js";
 
 export function createServer(config: BackendConfig, store: JsonStore = createStore(config.dataDir)) {
   const app = express();
+
+  app.use((req, res, next)=>{
+    const origin = req.header("origin");
+
+    const allowedOrigins = [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "http://localhost:5174",
+      "http://127.0.0.1:5174",
+      "http://localhost:5175",
+      "http://127.0.0.1:5175",
+    ];
+
+    if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization"
+      );
+    }
+
+    if (req.method === "OPTIONS") {
+      res.sendStatus(204);
+      return;
+    }
+
+    next();
+  });
 
   app.get("/health", (_request, response) => {
     response.json({ ok: true });
@@ -194,6 +224,56 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
     response.json({ session: store.getSession(request.params.session_id) });
   });
 
+  app.get("/sessions/:session_id/log", (request, response) => {
+    let session: RecordingSession;
+    try {
+      session = store.getSession(request.params.session_id);
+    } catch {
+      response.status(404).json({
+        code: "session_not_found",
+        message: `Session not found: ${request.params.session_id}`,
+        session_id: request.params.session_id
+      });
+      return;
+    }
+
+    const tracePath = session.summary?.trace_path ?? join(config.dataDir, "sessions", session.session_id, "trace.json");
+    if (!existsSync(tracePath)) {
+      response.json({
+        session,
+        session_id: session.session_id,
+        status: session.status,
+        target_url: session.target_url,
+        started_at: session.started_at ?? session.created_at,
+        stopped_at: session.stopped_at,
+        duration_ms: session.summary?.duration_ms ?? null,
+        events: []
+      });
+      return;
+    }
+
+    try {
+      const trace = JSON.parse(readFileSync(tracePath, "utf8")) as WorkflowTrace;
+      response.json({
+        session,
+        session_id: session.session_id,
+        status: session.status,
+        target_url: trace.target_url,
+        started_at: trace.started_at,
+        stopped_at: trace.stopped_at,
+        duration_ms: trace.duration_ms ?? session.summary?.duration_ms ?? null,
+        events: trace.events,
+        summary: session.summary ?? null
+      });
+    } catch (error) {
+      response.status(500).json({
+        code: "session_log_unreadable",
+        message: error instanceof Error ? error.message : String(error),
+        session_id: session.session_id
+      });
+    }
+  });
+
   app.post("/helper/sessions/:session_id/confirm", (request, response) => {
     response.json({ session: store.updateSession(request.params.session_id, { status: "recording", started_at: new Date().toISOString() }) });
   });
@@ -232,23 +312,35 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
 
   app.post("/sessions/:session_id/generate", express.json(), async (request, response) => {
     const session = store.getSession(request.params.session_id);
-    const result = await generatePlaywrightArtifact(session, config);
-    store.updateSession(session.session_id, { generated_artifact_path: result.artifactPath });
-    response.json(result);
+    try {
+      const result = await generatePlaywrightArtifact(session, config);
+      store.updateSession(session.session_id, { generated_artifact_path: result.artifactPath });
+      response.json(result);
+    } catch (error) {
+      handleGenerationError(response, session.session_id, error);
+    }
   });
 
   app.post("/sessions/:session_id/generate-runbook", express.json(), async (request, response) => {
     const session = store.getSession(request.params.session_id);
-    const result = await generateRunbookArtifact(session, config);
-    store.updateSession(session.session_id, { generated_runbook_path: result.artifactPath });
-    response.json(result);
+    try {
+      const result = await generateRunbookArtifact(session, config);
+      store.updateSession(session.session_id, { generated_runbook_path: result.artifactPath });
+      response.json(result);
+    } catch (error) {
+      handleGenerationError(response, session.session_id, error);
+    }
   });
 
   app.post("/sessions/:session_id/generate-skill", express.json(), async (request, response) => {
     const session = store.getSession(request.params.session_id);
-    const result = await generateSkillArtifact(session, config);
-    store.updateSession(session.session_id, { generated_skill_path: result.artifactPath });
-    response.json(result);
+    try {
+      const result = await generateSkillArtifact(session, config);
+      store.updateSession(session.session_id, { generated_skill_path: result.artifactPath });
+      response.json(result);
+    } catch (error) {
+      handleGenerationError(response, session.session_id, error);
+    }
   });
 
   app.post("/dev/slack-command", express.json(), async (request, response) => {
@@ -260,7 +352,7 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
       config,
       store
     });
-    response.json(result);
+    response.json({ ...result, session_id: extractSessionId(result.text) });
   });
 
   app.get("/dev/sessions", (_request, response) => {
@@ -282,43 +374,109 @@ async function handleSlashCommand(options: {
   const argument = rest.join(" ");
 
   if (command === "start") {
-    if (!argument || !isAllowedRecordingUrl(argument, options.config.allowedRecordingOrigins)) {
-      return slackText(`Target URL is not allowed. Allowed origins: ${options.config.allowedRecordingOrigins.join(", ")}`);
+    const parts = argument.trim().split(/\s+/);
+
+    let sessionId: string | undefined;
+    let targetUrl: string;
+
+    if (parts.length === 1) {
+      // start <url>
+      targetUrl = parts[0];
+    } else {
+      // start <session_id> <url>
+      sessionId = parts[0];
+      targetUrl = parts[1];
+    }
+
+    if (
+      !targetUrl ||
+      !isAllowedRecordingUrl(
+        targetUrl,
+        options.config.allowedRecordingOrigins
+      )
+    ) {
+      return slackText(
+        `Target URL is not allowed. Allowed origins: ${options.config.allowedRecordingOrigins.join(", ")}`
+      );
     }
 
     const paired = options.store.getFirstDevice();
-    const session = options.store.createSession({
-      slack_team_id: options.teamId,
-      slack_channel_id: options.channelId,
-      slack_user_id: options.userId,
-      target_url: argument,
-      device_id: paired?.device_id
-    });
+
+    let session;
+
+    if (sessionId) {
+      // 覆蓋既有 Session
+      session = options.store.updateSession(sessionId, {
+        slack_team_id: options.teamId,
+        slack_channel_id: options.channelId,
+        slack_user_id: options.userId,
+        target_url: targetUrl,
+        device_id: paired?.device_id,
+        status: "recording",
+        started_at: new Date().toISOString(),
+        stopped_at: undefined,
+      });
+
+      if (!session) {
+        return slackText(`Session not found: ${sessionId}`);
+      }
+    } else {
+      session = options.store.createSession({
+        slack_team_id: options.teamId,
+        slack_channel_id: options.channelId,
+        slack_user_id: options.userId,
+        target_url: targetUrl,
+        device_id: paired?.device_id,
+      });
+    }
 
     return slackText(`Ready to record Chrome workflow.
 
-Device: ${paired?.name ?? "not connected"}
-Chrome extension: Checked by local helper
-Screen recording: Not required yet
-Target: ${argument}
-Session: ${session.session_id}
+  Device: ${paired?.name ?? "not connected"}
+  Chrome extension: Checked by local helper
+  Screen recording: Not required yet
+  Target: ${targetUrl}
+  Session: ${session.session_id}
 
-Confirm locally on the Mac to start recording.`);
+  Confirm locally on the Mac to start recording.`);
   }
 
   if (command === "stop") {
-    const session = options.store.findActiveForSlackUser(options.teamId, options.userId);
-    if (!session) return slackText("No active recording session found.");
-    options.store.updateSession(session.session_id, { status: "stopping" });
-    return slackText(`Stop requested for ${session.session_id}. The Mac helper will finalize the trace.`);
+    const session = argument
+      ? options.store.getSession(argument)
+      : options.store.findActiveForSlackUser(
+          options.teamId,
+          options.userId
+        );
+
+    if (!session) {
+      return slackText("No recording session found.");
+    }
+
+    options.store.updateSession(session.session_id, {
+      status: "stopping",
+    });
+
+    return slackText(
+      `Stop requested for ${session.session_id}. The Mac helper will finalize the trace.`
+    );
   }
 
   if (command === "status") {
-    const session = options.store.findActiveForSlackUser(options.teamId, options.userId);
-    if (!session) return slackText("No active recording session found.");
+    const session = argument
+      ? options.store.getSession(argument)
+      : options.store.findActiveForSlackUser(
+          options.teamId,
+          options.userId
+        );
+
+    if (!session) {
+      return slackText("No recording session found.");
+    }
+
     return slackText(`Recording status: ${session.status}
-Target: ${session.target_url}
-Session: ${session.session_id}`);
+  Target: ${session.target_url}
+  Session: ${session.session_id}`);
   }
 
   if (command === "generate-test") {
@@ -421,5 +579,27 @@ function verifySlackRequest(request: Request, config: BackendConfig): boolean {
     timestamp: request.header("x-slack-request-timestamp"),
     signature: request.header("x-slack-signature"),
     rawBody: request.body
+  });
+}
+
+function extractSessionId(text: string | undefined): string | undefined {
+  return text?.match(/Session:\s*(\S+)/i)?.[1];
+}
+
+function handleGenerationError(response: Response, sessionId: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("no readable trace_path")) {
+    response.status(409).json({
+      code: "trace_not_ready",
+      message: `Session ${sessionId} is not ready for generation yet. Stop/finalize the recording so the helper can upload a readable trace_path.`,
+      session_id: sessionId
+    });
+    return;
+  }
+
+  response.status(500).json({
+    code: "generation_failed",
+    message,
+    session_id: sessionId
   });
 }
