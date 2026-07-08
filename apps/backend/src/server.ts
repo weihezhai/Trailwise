@@ -11,6 +11,35 @@ import { appendRecordedEvent } from "./trace-recorder.js";
 export function createServer(config: BackendConfig, store: JsonStore = createStore(config.dataDir)) {
   const app = express();
 
+  app.use((req, res, next)=>{
+    const origin = req.header("origin");
+
+    const allowedOrigins = [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "http://localhost:5174",
+      "http://127.0.0.1:5174",
+      "http://localhost:5175",
+      "http://127.0.0.1:5175",
+    ];
+
+    if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization"
+      );
+    }
+
+    if (req.method === "OPTIONS") {
+      res.sendStatus(204);
+      return;
+    }
+
+    next();
+  });
+
   app.get("/health", (_request, response) => {
     response.json({ ok: true });
   });
@@ -282,43 +311,109 @@ async function handleSlashCommand(options: {
   const argument = rest.join(" ");
 
   if (command === "start") {
-    if (!argument || !isAllowedRecordingUrl(argument, options.config.allowedRecordingOrigins)) {
-      return slackText(`Target URL is not allowed. Allowed origins: ${options.config.allowedRecordingOrigins.join(", ")}`);
+    const parts = argument.trim().split(/\s+/);
+
+    let sessionId: string | undefined;
+    let targetUrl: string;
+
+    if (parts.length === 1) {
+      // start <url>
+      targetUrl = parts[0];
+    } else {
+      // start <session_id> <url>
+      sessionId = parts[0];
+      targetUrl = parts[1];
+    }
+
+    if (
+      !targetUrl ||
+      !isAllowedRecordingUrl(
+        targetUrl,
+        options.config.allowedRecordingOrigins
+      )
+    ) {
+      return slackText(
+        `Target URL is not allowed. Allowed origins: ${options.config.allowedRecordingOrigins.join(", ")}`
+      );
     }
 
     const paired = options.store.getFirstDevice();
-    const session = options.store.createSession({
-      slack_team_id: options.teamId,
-      slack_channel_id: options.channelId,
-      slack_user_id: options.userId,
-      target_url: argument,
-      device_id: paired?.device_id
-    });
+
+    let session;
+
+    if (sessionId) {
+      // 覆蓋既有 Session
+      session = options.store.updateSession(sessionId, {
+        slack_team_id: options.teamId,
+        slack_channel_id: options.channelId,
+        slack_user_id: options.userId,
+        target_url: targetUrl,
+        device_id: paired?.device_id,
+        status: "recording",
+        started_at: new Date().toISOString(),
+        stopped_at: undefined,
+      });
+
+      if (!session) {
+        return slackText(`Session not found: ${sessionId}`);
+      }
+    } else {
+      session = options.store.createSession({
+        slack_team_id: options.teamId,
+        slack_channel_id: options.channelId,
+        slack_user_id: options.userId,
+        target_url: targetUrl,
+        device_id: paired?.device_id,
+      });
+    }
 
     return slackText(`Ready to record Chrome workflow.
 
-Device: ${paired?.name ?? "not connected"}
-Chrome extension: Checked by local helper
-Screen recording: Not required yet
-Target: ${argument}
-Session: ${session.session_id}
+  Device: ${paired?.name ?? "not connected"}
+  Chrome extension: Checked by local helper
+  Screen recording: Not required yet
+  Target: ${targetUrl}
+  Session: ${session.session_id}
 
-Confirm locally on the Mac to start recording.`);
+  Confirm locally on the Mac to start recording.`);
   }
 
   if (command === "stop") {
-    const session = options.store.findActiveForSlackUser(options.teamId, options.userId);
-    if (!session) return slackText("No active recording session found.");
-    options.store.updateSession(session.session_id, { status: "stopping" });
-    return slackText(`Stop requested for ${session.session_id}. The Mac helper will finalize the trace.`);
+    const session = argument
+      ? options.store.getSession(argument)
+      : options.store.findActiveForSlackUser(
+          options.teamId,
+          options.userId
+        );
+
+    if (!session) {
+      return slackText("No recording session found.");
+    }
+
+    options.store.updateSession(session.session_id, {
+      status: "stopping",
+    });
+
+    return slackText(
+      `Stop requested for ${session.session_id}. The Mac helper will finalize the trace.`
+    );
   }
 
   if (command === "status") {
-    const session = options.store.findActiveForSlackUser(options.teamId, options.userId);
-    if (!session) return slackText("No active recording session found.");
+    const session = argument
+      ? options.store.getSession(argument)
+      : options.store.findActiveForSlackUser(
+          options.teamId,
+          options.userId
+        );
+
+    if (!session) {
+      return slackText("No recording session found.");
+    }
+
     return slackText(`Recording status: ${session.status}
-Target: ${session.target_url}
-Session: ${session.session_id}`);
+  Target: ${session.target_url}
+  Session: ${session.session_id}`);
   }
 
   if (command === "generate-test") {
