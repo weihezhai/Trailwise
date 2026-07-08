@@ -261,23 +261,35 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
 
   app.post("/sessions/:session_id/generate", express.json(), async (request, response) => {
     const session = store.getSession(request.params.session_id);
-    const result = await generatePlaywrightArtifact(session, config);
-    store.updateSession(session.session_id, { generated_artifact_path: result.artifactPath });
-    response.json(result);
+    try {
+      const result = await generatePlaywrightArtifact(session, config);
+      store.updateSession(session.session_id, { generated_artifact_path: result.artifactPath });
+      response.json(result);
+    } catch (error) {
+      handleGenerationError(response, session.session_id, error);
+    }
   });
 
   app.post("/sessions/:session_id/generate-runbook", express.json(), async (request, response) => {
     const session = store.getSession(request.params.session_id);
-    const result = await generateRunbookArtifact(session, config);
-    store.updateSession(session.session_id, { generated_runbook_path: result.artifactPath });
-    response.json(result);
+    try {
+      const result = await generateRunbookArtifact(session, config);
+      store.updateSession(session.session_id, { generated_runbook_path: result.artifactPath });
+      response.json(result);
+    } catch (error) {
+      handleGenerationError(response, session.session_id, error);
+    }
   });
 
   app.post("/sessions/:session_id/generate-skill", express.json(), async (request, response) => {
     const session = store.getSession(request.params.session_id);
-    const result = await generateSkillArtifact(session, config);
-    store.updateSession(session.session_id, { generated_skill_path: result.artifactPath });
-    response.json(result);
+    try {
+      const result = await generateSkillArtifact(session, config);
+      store.updateSession(session.session_id, { generated_skill_path: result.artifactPath });
+      response.json(result);
+    } catch (error) {
+      handleGenerationError(response, session.session_id, error);
+    }
   });
 
   app.post("/dev/slack-command", express.json(), async (request, response) => {
@@ -516,5 +528,23 @@ function verifySlackRequest(request: Request, config: BackendConfig): boolean {
     timestamp: request.header("x-slack-request-timestamp"),
     signature: request.header("x-slack-signature"),
     rawBody: request.body
+  });
+}
+
+function handleGenerationError(response: Response, sessionId: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("no readable trace_path")) {
+    response.status(409).json({
+      code: "trace_not_ready",
+      message: `Session ${sessionId} is not ready for generation yet. Stop/finalize the recording so the helper can upload a readable trace_path.`,
+      session_id: sessionId
+    });
+    return;
+  }
+
+  response.status(500).json({
+    code: "generation_failed",
+    message,
+    session_id: sessionId
   });
 }
