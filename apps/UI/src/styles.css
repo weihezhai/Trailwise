@@ -936,6 +936,16 @@ kbd {
   line-height: 40px;
 }
 
+.session-status-row {
+  position: relative;
+  z-index: 1;
+  margin-top: 8px;
+  padding-left: 56px;
+  color: #687990;
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .target-url-row {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
@@ -1799,7 +1809,7 @@ kbd {
 .table-head,
 .table-row {
   display: grid;
-  grid-template-columns: 64px 1fr 132px 116px;
+  grid-template-columns: 64px minmax(0, 1fr) 112px 116px 88px;
   align-items: center;
   column-gap: 12px;
   min-height: 52px;
@@ -1813,6 +1823,7 @@ kbd {
   border-right: 0;
   border-left: 0;
   background: #ffffff;
+  cursor: pointer;
   font: inherit;
   text-align: left;
   transition:
@@ -1879,6 +1890,17 @@ kbd {
   color: var(--amber);
 }
 
+.table-row em.disabled {
+  border-color: #d8e1ed;
+  background: #f3f6fa;
+  color: #76879c;
+}
+
+.table-row.disabled strong,
+.table-row.disabled span {
+  color: #8796aa;
+}
+
 .table-row.selected {
   border-color: rgba(75, 132, 255, 0.72);
   background: #f3f7ff;
@@ -1892,6 +1914,52 @@ kbd {
 .table-row:focus-visible {
   outline: 2px solid rgba(47, 117, 255, 0.38);
   outline-offset: -2px;
+}
+
+.step-toggle {
+  display: inline-flex;
+  width: 78px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(60, 60, 67, 0.12);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #34445b;
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 14px;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.step-toggle:hover {
+  border-color: #b9c9df;
+  background: #f8fbff;
+}
+
+.log-empty-state {
+  display: grid;
+  min-height: 112px;
+  place-items: center;
+  border-bottom: 1px solid rgba(216, 225, 237, 0.58);
+  background: #ffffff;
+  color: #687990;
+  padding: 24px;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.log-empty-state.error {
+  min-height: auto;
+  margin-top: 16px;
+  border: 1px solid #ffd0cc;
+  border-radius: 8px;
+  background: #fff0ef;
+  color: var(--red);
 }
 
 .flow-map {
@@ -1993,6 +2061,19 @@ kbd {
 
 .card-head .btn {
   height: 36px;
+}
+
+.artifact-path {
+  display: block;
+  max-width: 720px;
+  overflow: hidden;
+  margin-top: 10px;
+  color: #607289;
+  font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .automation-grid {
@@ -3005,7 +3086,7 @@ dd {
 
   .table-head,
   .table-row {
-    grid-template-columns: 56px minmax(0, 1fr) 112px 88px;
+    grid-template-columns: 56px minmax(0, 1fr) 104px 88px 86px;
     column-gap: 10px;
     padding: 0 16px;
   }
@@ -3159,7 +3240,7 @@ dd {
 
   .table-head,
   .table-row {
-    min-width: 560px;
+    min-width: 680px;
   }
 
   dl {

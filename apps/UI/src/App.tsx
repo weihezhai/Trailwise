@@ -1,5 +1,17 @@
 
-import { startRecording, stopRecording, statusRecording, generateTest } from "./api/trailwise";
+import {
+  deleteSession,
+  generateRunbook,
+  generateSkill,
+  getSessionLog,
+  listSessions,
+  startRecording,
+  statusRecording,
+  stopRecording,
+  type RecordingSession,
+  type SessionLog,
+  type SessionLogEvent,
+} from "./api/trailwise";
 import MissionRail from "./component/MissionRail";
 import TopBar from "./component/TopBar";
 import WorkspaceSidebar from "./component/WorkspaceSidebar";
@@ -7,7 +19,7 @@ import { AnimatedTabs, type AnimatedTabItem } from "./component/ui/AnimatedTabs"
 import { GridBackground } from "./component/ui/GridBackground";
 import { MovingBorderButton } from "./component/ui/MovingBorderButton";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   BookOpen,
@@ -25,71 +37,6 @@ import ProjectDelete from "./component/ProjectDelete";
 
 const icon18 = { size: 18, strokeWidth: 1.75 };
 const icon20 = { size: 20, strokeWidth: 1.75 };
-
-const runbookText = `1  # Expense approval workflow memory
-2  Initial state: browser is open at the expenses workspace.
-3  Step 1: Open the expenses list.
-4  Stage result: request table is visible.
-5  Step 2: Create an approval request and fill amount plus approver.
-6  Stage result: request form contains the required fields.
-7  Step 3: Submit and wait for success confirmation.`;
-
-const traceEvents = [
-  {
-    step: 1,
-    action: "Open http://localhost:5173/expenses",
-    state: "Done",
-    stateClass: "done",
-    time: "10:24:12",
-    selector: "location.href",
-    result: "expenses page loaded",
-  },
-  {
-    step: 2,
-    action: "Click Create request",
-    state: "Done",
-    stateClass: "done",
-    time: "10:24:18",
-    selector: "button[data-action=create]",
-    result: "request form opened",
-  },
-  {
-    step: 3,
-    action: "Enter amount and approver",
-    state: "Done",
-    stateClass: "done",
-    time: "10:24:25",
-    selector: "input[name=approval]",
-    result: "approval fields populated",
-  },
-  {
-    step: 4,
-    action: "Submit approval request",
-    state: "Done",
-    stateClass: "done",
-    time: "10:24:38",
-    selector: "button[type=submit]",
-    result: "waiting for success state",
-  },
-  {
-    step: 5,
-    action: "Wait for success confirmation",
-    state: "Pending",
-    stateClass: "pending",
-    time: "--:--",
-    selector: "[data-state=success]",
-    result: "success confirmation pending",
-  },
-  {
-    step: 6,
-    action: "Capture result state",
-    state: "Pending",
-    stateClass: "pending",
-    time: "--:--",
-    selector: "[data-capture=result]",
-    result: "result state not captured",
-  },
-];
 
 const recordingSeed = [
   {
@@ -133,14 +80,97 @@ const recordingSeed = [
 type Panel = "overview" | "trace" | "runbook" | "automation";
 type RecordingPhase = "ready" | "recording" | "completed";
 type WorkflowStage = "prepare" | "record" | "review" | "generate";
-type LoadingAction = "test" | "runbook" | null;
+type LoadingAction = "skill" | "runbook" | null;
 type ThemeMode = "light" | "dark";
 type Toast = { id: number; message: string; tone?: "error" | "default" };
+type TimelineEntry = SessionLogEvent & {
+  action: string;
+  description: string;
+  target: string;
+  time: string;
+  state: string;
+  stateClass: "done" | "pending" | "disabled";
+  disabled: boolean;
+};
+
+const workflowActionTypes = new Set<SessionLogEvent["type"]>(["navigation", "click", "input", "submit"]);
 
 function formatDuration(totalSeconds: number) {
   const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
   const seconds = (totalSeconds % 60).toString().padStart(2, "0");
   return `${minutes}:${seconds}`;
+}
+
+function formatEventTime(event: SessionLogEvent, startedAt?: string) {
+  if (startedAt && Number.isFinite(Date.parse(startedAt))) {
+    return new Date(Date.parse(startedAt) + event.ts).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+
+  if (Number.isFinite(event.ts)) return `${Math.round(event.ts / 100) / 10}s`;
+  return "--";
+}
+
+function cleanTarget(value: string | undefined | null) {
+  return value?.replace(/\s+/g, " ").trim() || "";
+}
+
+function eventTarget(event: SessionLogEvent) {
+  return (
+    cleanTarget(event.label) ||
+    cleanTarget(event.text) ||
+    cleanTarget(event.element?.label) ||
+    cleanTarget(event.element?.ariaLabel) ||
+    cleanTarget(event.element?.placeholder) ||
+    cleanTarget(event.element?.name) ||
+    cleanTarget(event.element?.text) ||
+    cleanTarget(event.selector) ||
+    cleanTarget(event.url) ||
+    "recorded element"
+  );
+}
+
+function quoted(value: string) {
+  return value.startsWith("http") || value.includes("[") || value.includes("=") ? value : `"${value}"`;
+}
+
+function eventDescription(event: SessionLogEvent) {
+  const target = eventTarget(event);
+  if (event.type === "input") {
+    const value = event.value_policy === "redacted" ? "[REDACTED]" : event.value || "[TYPED_TEXT]";
+    return `Entered ${quoted(value)} into ${quoted(target)}`;
+  }
+  if (event.type === "click") return `Clicked ${quoted(target)}`;
+  if (event.type === "submit") return `Submitted ${quoted(target)}`;
+  if (event.type === "navigation") return `Navigated to ${event.url || target}`;
+  return `${event.type.replace(/_/g, " ")} ${target}`;
+}
+
+function buildSkillText(sessionId: string | undefined, entries: TimelineEntry[]) {
+  const includedEntries = entries.filter((entry) => !entry.disabled);
+  const lines = [
+    `name: trailwise-recorded-${sessionId || "session"}`,
+    "description: Replay the recorded browser workflow from the selected Trailwise session.",
+    "",
+    "# Trailwise Session Skill",
+    "",
+    "Use this skill to replay the recorded action log. Target business records remain in the original website.",
+    "",
+    "## Action Log",
+  ];
+
+  if (!includedEntries.length) {
+    lines.push("- No enabled recorded actions are available yet.");
+  } else {
+    for (const [index, entry] of includedEntries.entries()) {
+      lines.push(`${index + 1}. ${entry.description}`);
+    }
+  }
+
+  return lines.join("\n");
 }
 
 export default function App() {
@@ -151,20 +181,23 @@ export default function App() {
         return "light";
       }
     });
-  const [url] = useState("http://localhost:5173");
   const [, setMessage] = useState("");
   const [, setProjectName] = useState("CREATE YOUR PROJECT");
-  const [currentSession, setCurrentSession] = useState<{ session_id: string; status?: string } | null>(null);
-  const [sessions, setSessions] = useState<Array<{ session_id: string; status: string }>>([]);
+  const [currentSession, setCurrentSession] = useState<RecordingSession | null>(null);
+  const [sessions, setSessions] = useState<RecordingSession[]>([]);
+  const [sessionLog, setSessionLog] = useState<SessionLog | null>(null);
+  const [logLoading, setLogLoading] = useState(false);
+  const [logError, setLogError] = useState("");
+  const [disabledSteps, setDisabledSteps] = useState<Record<number, boolean>>({});
 
     const [activePanel, setActivePanel] = useState<Panel>("overview");
-    const [selectedRecordingId] = useState("expense");
-    const [selectedStep, setSelectedStep] = useState(4);
+  const [selectedStep, setSelectedStep] = useState(0);
     const [recordingPhase, setRecordingPhase] = useState<RecordingPhase>("ready");
     const [durationSeconds, setDurationSeconds] = useState(recordingSeed[0].duration);
     const [actionsCaptured, setActionsCaptured] = useState(recordingSeed[0].actions);
     const [loadingAction, setLoadingAction] = useState<LoadingAction>(null);
-    const [generatedArtifacts, setGeneratedArtifacts] = useState({ test: false, runbook: false });
+    const [generatedArtifacts, setGeneratedArtifacts] = useState({ skill: false, runbook: false });
+    const [generatedSkillPath, setGeneratedSkillPath] = useState("");
     const [toasts, setToasts] = useState<Toast[]>([]);
     const [copied, setCopied] = useState(false);
     const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -185,9 +218,24 @@ export default function App() {
     }
   }, [themeMode]);
 
-  const selectedRecording =
-    recordingSeed.find((recording) => recording.id === selectedRecordingId) ?? recordingSeed[0];
-  const selectedEvent = traceEvents.find((event) => event.step === selectedStep) ?? traceEvents[3];
+  const timelineEntries: TimelineEntry[] = (sessionLog?.events ?? [])
+    .filter((event) => workflowActionTypes.has(event.type))
+    .map((event) => {
+      const disabled = Boolean(disabledSteps[event.seq]);
+      return {
+        ...event,
+        action: eventDescription(event),
+        description: eventDescription(event),
+        target: eventTarget(event),
+        time: formatEventTime(event, sessionLog?.started_at),
+        state: disabled ? "Disabled" : "Included",
+        stateClass: disabled ? "disabled" : "done",
+        disabled,
+      };
+    });
+  const selectedEvent = timelineEntries.find((event) => event.seq === selectedStep) ?? timelineEntries[0] ?? null;
+  const includedActionCount = timelineEntries.filter((event) => !event.disabled).length;
+  const skillText = buildSkillText(currentSession?.session_id, timelineEntries);
   const sessionStatus = currentSession?.status?.toLowerCase() ?? "";
   const isSessionRecording = sessionStatus.includes("recording");
   const isSessionCompleted = /completed|finished|recorded|stop|stopped|stopping/.test(sessionStatus);
@@ -275,11 +323,31 @@ const workflowStage: WorkflowStage =
   
       const intervalId = window.setInterval(() => {
         setDurationSeconds((current) => current + 1);
-        setActionsCaptured((current) => Math.min(current + 1, 99));
       }, 1000);
   
       return () => window.clearInterval(intervalId);
     }, [isRecording]);
+
+    useEffect(() => {
+      if (!currentSession?.session_id) {
+        setSessionLog(null);
+        setDisabledSteps({});
+        setSelectedStep(0);
+        return;
+      }
+
+      void loadSessionLog(currentSession.session_id, { silent: true });
+    }, [currentSession?.session_id]);
+
+    useEffect(() => {
+      if (!currentSession?.session_id || !isRecording) return undefined;
+
+      const intervalId = window.setInterval(() => {
+        void loadSessionLog(currentSession.session_id, { silent: true });
+      }, 2000);
+
+      return () => window.clearInterval(intervalId);
+    }, [currentSession?.session_id, isRecording]);
   
     const showToast = (message: string, tone: Toast["tone"] = "default") => {
       const id = Date.now();
@@ -288,8 +356,42 @@ const workflowStage: WorkflowStage =
         setToasts((current) => current.filter((toast) => toast.id !== id));
       }, tone === "error" ? 3200 : 1800);
     };
+
+  async function loadSessionLog(sessionId: string, options: { silent?: boolean } = {}) {
+    if (!options.silent) setLogLoading(true);
+    setLogError("");
+
+    try {
+      const data = await getSessionLog(sessionId);
+      const actionEvents = data.events.filter((event) => workflowActionTypes.has(event.type));
+
+      setSessionLog(data);
+      setActionsCaptured(actionEvents.length);
+      if (typeof data.duration_ms === "number") {
+        setDurationSeconds(Math.round(data.duration_ms / 1000));
+      }
+      if (actionEvents.length) {
+        setSelectedStep((current) =>
+          actionEvents.some((event) => event.seq === current) ? current : actionEvents[0].seq,
+        );
+      } else {
+        setSelectedStep(0);
+      }
+      if (data.session) {
+        setCurrentSession((session) =>
+          session?.session_id === data.session_id ? { ...session, ...data.session, status: data.status } : session,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to load session log";
+      setLogError(message);
+      if (!options.silent) showToast(message, "error");
+    } finally {
+      if (!options.silent) setLogLoading(false);
+    }
+  }
   
-  const openProjectSession = async (session: { session_id: string; status: string }) => {
+  const openProjectSession = async (session: RecordingSession) => {
     try {
       const result = await statusRecording(session.session_id);
       const statusText = result?.text ?? "";
@@ -325,9 +427,11 @@ const workflowStage: WorkflowStage =
 
       setCurrentSession({ ...session, status: freshStatus });
       setProjectName(session.session_id);
+      if (session.target_url) setTargetUrl(session.target_url);
       setActivePanel(panelForStatus);
       setSidebarOpen(false);
       showToast(`Loaded ${session.session_id} (${freshStatus}) - opened ${panelForStatus}`);
+      await loadSessionLog(session.session_id);
       await loadSessions();
     } catch (error) {
       console.error("Failed to fetch session status", error);
@@ -349,18 +453,19 @@ const workflowStage: WorkflowStage =
     window.setTimeout(() => target.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   };
 
-    const confirmMemory = () => {
+    const confirmMemory = async () => {
     if (!isCompleted) {
 
       showToast("Complete the recording before confirming memory");
       return;
     }
     
+    if (currentSession?.session_id) {
+      await loadSessionLog(currentSession.session_id);
+    }
     setMemoryConfirmed(true);
-    generateTest(currentSession?.session_id);
-    jumpTo("overview");
     setActivePanel("trace");
-    showToast("Workflow memory saved");
+    showToast("Session action log confirmed");
     };
   
     const checkStatus = () => {
@@ -376,78 +481,116 @@ const workflowStage: WorkflowStage =
       showToast("Settings are not connected in this prototype");
     };
   
-    const generateArtifact = (kind: Exclude<LoadingAction, null>) => {
-      if (!isCompleted || loadingAction) return;
+    const generateArtifact = async (kind: Exclude<LoadingAction, null>) => {
+      if (!isCompleted || !currentSession?.session_id || loadingAction) return;
 
       setLoadingAction(kind);
-      window.setTimeout(() => {
+      try {
+        const result = kind === "skill"
+          ? await generateSkill(currentSession.session_id)
+          : await generateRunbook(currentSession.session_id);
+
         setGeneratedArtifacts((current) => ({ ...current, [kind]: true }));
+        if (kind === "skill") {
+          setGeneratedSkillPath(result.artifactPath ?? "");
+        }
+        showToast(kind === "skill" ? "Skill generated from session log" : "Runbook generated from session log");
+        jumpTo("runbook");
+        await loadSessions();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Generation failed";
+        showToast(message, "error");
+      } finally {
         setLoadingAction(null);
-        showToast(kind === "test" ? "Test Case generated successfully" : "Runbook generated successfully");
-        if (kind === "runbook") jumpTo("runbook");
-      }, 900);
+      }
     };
 
   const toggleSidebar = () => {
     setSidebarOpen((current) => !current);
   };
 
+  const toggleStepDisabled = (seq: number) => {
+    setDisabledSteps((current) => ({
+      ...current,
+      [seq]: !current[seq],
+    }));
+  };
+
+  const deleteCurrentSession = async (session: { session_id: string }) => {
+    try {
+      await deleteSession(session.session_id);
+      setCurrentSession(null);
+      setSessionLog(null);
+      setMemoryConfirmed(false);
+      setRecordingPhase("ready");
+      await loadSessions();
+      showToast(`Deleted ${session.session_id}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Delete failed";
+      showToast(message, "error");
+    }
+  };
+
   const copyRunbook = async () => {
     try {
-      await navigator.clipboard.writeText(runbookText);
+      await navigator.clipboard.writeText(skillText);
     } catch {
       // The visual acknowledgement still helps when clipboard access is blocked.
     }
 
     setCopied(true);
-    showToast("Reusable runbook copied");
+    showToast("Reusable skill copied");
     window.setTimeout(() => setCopied(false), 1200);
   };
 
-  async function loadSessions() {
-    const res = await fetch("http://localhost:3000/dev/sessions");
-    const data = await res.json();
-
-    setSessions(data.sessions.filter((s: { status: string }) => s.status !== "deleted"));
-  }
+  const loadSessions = useCallback(async () => {
+    const data = await listSessions();
+    const visibleSessions = data.filter((session) => session.status !== "deleted");
+    setSessions(visibleSessions);
+    return visibleSessions;
+  }, []);
 
 
    const beginRecording = async () => {
     if (isRecording) return;
     try {
-          const result = await startRecording(url);
+          const result = await startRecording(targetUrl);
     
           console.log(result);
     
           setMessage(result.text ?? JSON.stringify(result));
     
-          await loadSessions();
+          const activeSessions = await loadSessions();
     
           const match = result.text?.match(/Session:\s*(\S+)/);
-          const sessionId = match?.[1];
+          const sessionId = result.session_id ?? match?.[1];
     
           if (sessionId) {
-            const res = await fetch("http://localhost:3000/dev/sessions");
-            const data = await res.json();
-            const newSession = data.sessions.find(
-              (s: { session_id: string }) => s.session_id === sessionId
-            );
+            const newSession = activeSessions.find((session) => session.session_id === sessionId);
     
             if (newSession) {
               setCurrentSession(newSession);
               setProjectName(newSession.session_id);
+            } else {
+              setCurrentSession({
+                session_id: sessionId,
+                status: "pending_local_confirmation",
+                target_url: targetUrl,
+              });
+              setProjectName(sessionId);
             }
 
             setRecordingPhase("recording");
             setDurationSeconds(0);
             setActionsCaptured(0);
-            setSelectedStep(1);
+            setDisabledSteps({});
+            setSelectedStep(0);
             jumpTo("overview");
             showToast("Recording started");
           }
     
           if (result.text?.[0] === "R") {
-            window.open(url, "_blank");
+            window.open(targetUrl, "_blank");
           }
         } catch (err) {
           console.error(err);
@@ -464,9 +607,9 @@ const workflowStage: WorkflowStage =
         setMessage(result.text ?? JSON.stringify(result));
         setRecordingPhase("completed");
         setCurrentSession((session) => (session ? { ...session, status: "stopping" } : session));
-        setSelectedStep(4);
         jumpTo("trace");
         showToast("Recording completed");
+        await loadSessionLog(currentSession.session_id, { silent: true });
         await loadSessions();
       } catch (err) {
         console.error(err);
@@ -496,19 +639,7 @@ const workflowStage: WorkflowStage =
       return;
     }
 
-    showToast("Robot run queued from workflow memory");
-  };
-  const visibleEventState = (event: (typeof traceEvents)[number]) => {
-    if (selectedStep === event.step) return "Selected";
-    if (isRecording && event.step > Math.max(1, Math.min(actionsCaptured, 6))) return "Pending";
-    if (isCompleted && event.step <= 6) return "Done";
-    return event.state;
-  };
-    const visibleEventClass = (event: (typeof traceEvents)[number]) => {
-    if (selectedStep === event.step) return "";
-    if (visibleEventState(event) === "Done") return "done";
-    if (visibleEventState(event) === "Pending") return "pending";
-    return event.stateClass;
+    showToast(`Robot run queued with ${includedActionCount} enabled actions`);
   };
 
   return (
@@ -562,7 +693,7 @@ const workflowStage: WorkflowStage =
               <span>Session status: {currentSession.status ?? "Unknown"}</span>
             </div>
           )}
-          <ProjectDelete/>
+          <ProjectDelete session={currentSession} onDelete={deleteCurrentSession} />
           <AnimatedTabs activeId={activePanel} items={mainTabs} onChange={(panel) => openPanel(panel as Panel)} />
 
 
@@ -666,7 +797,7 @@ const workflowStage: WorkflowStage =
                           <div className="learned-head">
                             <div>
                               <span>WHAT TRAILWISE LEARNED</span>
-                              <h3>Expense approval can be reproduced from a clean browser state.</h3>
+                              <h3>This workflow can be replayed from one session action log.</h3>
                             </div>
                             <span className={memoryConfirmed ? "pill green" : "pill amber"}>
                               {memoryConfirmed ? "Confirmed" : "Needs review"}
@@ -675,15 +806,15 @@ const workflowStage: WorkflowStage =
                           <ol>
                             <li>
                               <strong>Initial state</strong>
-                              <span>Open the target URL with the local helper connected.</span>
+                              <span>Open {sessionLog?.target_url || targetUrl} with the local helper connected.</span>
                             </li>
                             <li>
                               <strong>Operating path</strong>
-                              <span>Create an approval request, fill required fields, and submit.</span>
+                              <span>{includedActionCount || actionsCaptured} recorded actions are available for replay review.</span>
                             </li>
                             <li>
                               <strong>Expected result</strong>
-                              <span>Success confirmation appears and the result state is captured.</span>
+                              <span>The log describes what was clicked, typed, and submitted during this run.</span>
                             </li>
                           </ol>
                         </div>
@@ -743,16 +874,16 @@ const workflowStage: WorkflowStage =
                             <button
                               className={loadingAction === "runbook" ? "btn light loading" : "btn light"}
                               disabled={loadingAction !== null}
-                              onClick={() => (generatedArtifacts.runbook ? openPanel("runbook") : generateArtifact("runbook"))}
+                              onClick={() => (generatedArtifacts.runbook ? openPanel("runbook") : void generateArtifact("runbook"))}
                             >
                               {generatedArtifacts.runbook ? "Open output" : "Generate Runbook"} <BookOpen {...icon18} aria-hidden="true" />
                             </button>
                             <button
-                              className={loadingAction === "test" ? "btn light loading" : "btn light"}
+                              className={loadingAction === "skill" ? "btn light loading" : "btn light"}
                               disabled={loadingAction !== null}
-                              onClick={() => generateArtifact("test")}
+                              onClick={() => void generateArtifact("skill")}
                             >
-                              Generate Test <FileCode {...icon18} aria-hidden="true" />
+                              Generate Skill <FileCode {...icon18} aria-hidden="true" />
                             </button>
                           </>
                         )}
@@ -791,7 +922,8 @@ const workflowStage: WorkflowStage =
                   ref={timelineRef}
                 >
                   <h2>Review structured memory</h2>
-                  <p>Use this detail view only when you need to inspect the captured actions behind the memory summary.</p>
+                  <p>Session {currentSession?.session_id ?? "not selected"} shows what the AI/user did, not business records from the target website.</p>
+                  {logError && <div className="log-empty-state error">{logError}</div>}
                   <div className="timeline-layout">
                     <div className="table">
                       <div className="table-head">
@@ -799,26 +931,53 @@ const workflowStage: WorkflowStage =
                         <span>Action</span>
                         <span>State</span>
                         <span>Time</span>
+                        <span>Replay</span>
                       </div>
-                      {traceEvents.map((event) => (
-                        <button
-                          className={selectedStep === event.step ? "table-row selected" : "table-row"}
-                          key={event.step}
-                          onClick={() => setSelectedStep(event.step)}
+                      {logLoading && <div className="log-empty-state">Loading session log...</div>}
+                      {!logLoading && !timelineEntries.length && (
+                        <div className="log-empty-state">
+                          {currentSession
+                            ? "No recorded click, input, submit, or navigation actions are available for this session yet."
+                            : "Start or select a session to review its action log."}
+                        </div>
+                      )}
+                      {timelineEntries.map((event, index) => (
+                        <div
+                          className={`${selectedStep === event.seq ? "table-row selected" : "table-row"} ${event.disabled ? "disabled" : ""}`}
+                          key={event.seq}
+                          onClick={() => setSelectedStep(event.seq)}
+                          onKeyDown={(keyboardEvent) => {
+                            if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
+                              keyboardEvent.preventDefault();
+                              setSelectedStep(event.seq);
+                            }
+                          }}
+                          role="button"
+                          tabIndex={0}
                         >
-                          <span>{event.step}</span>
+                          <span>{index + 1}</span>
                           <strong>{event.action}</strong>
-                          <em className={visibleEventClass(event)}>{visibleEventState(event)}</em>
+                          <em className={event.stateClass}>{selectedStep === event.seq ? "Selected" : event.state}</em>
                           <span>{event.time}</span>
-                        </button>
+                          <button
+                            className="step-toggle"
+                            onClick={(clickEvent) => {
+                              clickEvent.stopPropagation();
+                              toggleStepDisabled(event.seq);
+                            }}
+                            type="button"
+                          >
+                            {event.disabled ? "Enable" : "Disable"}
+                          </button>
+                        </div>
                       ))}
                     </div>
                     <div className="flow-map">
                       <span>Stage map</span>
-                      <em className={selectedStep === 1 ? "active" : ""}>Nav</em>
-                      <em className={selectedStep === 3 ? "active" : ""}>Input</em>
-                      <em className={selectedStep === 4 ? "active" : ""}>Submit</em>
-                      <em className={selectedStep >= 5 ? "active" : ""}>Verify</em>
+                      <em className={selectedEvent?.type === "navigation" ? "active" : ""}>Nav</em>
+                      <em className={selectedEvent?.type === "input" ? "active" : ""}>Input</em>
+                      <em className={selectedEvent?.type === "click" || selectedEvent?.type === "submit" ? "active" : ""}>Action</em>
+                      <em className={memoryConfirmed ? "active" : ""}>Reuse</em>
                     </div>
                   </div>
                   <div className="trace-next-step">
@@ -827,29 +986,29 @@ const workflowStage: WorkflowStage =
                       <h3>{memoryConfirmed ? "Generate outputs from workflow memory" : "Confirm the memory summary first"}</h3>
                       <p>
                         {memoryConfirmed
-                          ? "Create a Runbook that can guide people or feed automation."
+                          ? "Create a replayable skill from the enabled actions in this session log."
                           : "Return to the guided flow and save the structured workflow before generating outputs."}
                       </p>
                     </div>
                     <button
-                      className={loadingAction === "runbook" ? "btn dark loading" : "btn dark"}
+                      className={loadingAction === "skill" ? "btn dark loading" : "btn dark"}
                       disabled={loadingAction !== null}
                       onClick={() =>
                         memoryConfirmed
-                          ? generatedArtifacts.runbook
+                          ? generatedArtifacts.skill
                             ? openPanel("runbook")
-                            : generateArtifact("runbook")
+                            : void generateArtifact("skill")
                           : confirmMemory()
                       }
                     >
-                      {loadingAction === "runbook"
+                      {loadingAction === "skill"
                         ? "Generating"
-                        : generatedArtifacts.runbook
-                          ? "Open Runbook"
+                        : generatedArtifacts.skill
+                          ? "Open Skill"
                           : memoryConfirmed
-                            ? "Generate Runbook"
+                            ? "Generate Skill"
                             : "Confirm memory"}{" "}
-                      <BookOpen {...icon18} aria-hidden="true" />
+                      <FileCode {...icon18} aria-hidden="true" />
                     </button>
                   </div>
                 </article>
@@ -862,22 +1021,23 @@ const workflowStage: WorkflowStage =
                 >
                   <div className="card-head">
                     <div>
-                      <h2>Outputs from workflow memory</h2>
-                      <p>Generated from workflow memory, with initial state and expected stage results preserved.</p>
+                      <h2>Skill from session action log</h2>
+                      <p>{includedActionCount} enabled actions from session {currentSession?.session_id ?? "not selected"}. Target business records stay in the target website.</p>
+                      {generatedSkillPath && <span className="artifact-path">{generatedSkillPath}</span>}
                     </div>
                     <button className="btn light" disabled={!memoryConfirmed} onClick={copyRunbook}>
-                      Copy runbook <Copy {...icon18} aria-hidden="true" />
+                      Copy skill <Copy {...icon18} aria-hidden="true" />
                     </button>
                   </div>
                   <div className="code-panel">
                     <div className="code-tabs">
-                      <span>workflow_memory.md</span>
-                      <span>runbook.md</span>
+                      <span>session_log.json</span>
+                      <span>SKILL.md</span>
                       <button aria-label="Copy" className={copied ? "copied" : ""} onClick={copyRunbook}>
                         <Copy {...icon18} aria-hidden="true" />
                       </button>
                     </div>
-                    <pre>{runbookText}</pre>
+                    <pre>{skillText}</pre>
                   </div>
                 </article>
               )}
@@ -899,7 +1059,7 @@ const workflowStage: WorkflowStage =
                     <div>
                       <GitBranch {...icon18} aria-hidden="true" />
                       <strong>Workflow memory</strong>
-                      <span>{isCompleted ? `${actionsCaptured} actions with stage results` : "Waiting for structured memory"}</span>
+                      <span>{isCompleted ? `${includedActionCount} enabled actions from one session log` : "Waiting for structured memory"}</span>
                     </div>
                     <div>
                       <Bot {...icon18} aria-hidden="true" />
@@ -928,12 +1088,41 @@ const workflowStage: WorkflowStage =
             {activePanel === "trace" && (
             <aside className={`inspector ${workflowStage === "prepare" ? "is-secondary" : ""}`}>
               <div className="eyebrow">MEMORY DETAIL</div>
-              <div className="inspector-content" key={`${selectedRecordingId}-${selectedStep}`}>
+              <div className="inspector-content" key={`${currentSession?.session_id ?? "none"}-${selectedStep}`}>
                 <div className="inspector-title">
-                  <h2>{selectedEvent.action}</h2>
-                  <span className="pill">Selected</span>
+                  <h2>{selectedEvent?.action ?? "No action selected"}</h2>
+                  <span className={selectedEvent?.disabled ? "pill amber" : "pill"}>{selectedEvent?.disabled ? "Disabled" : "Selected"}</span>
                 </div>
-                <p>Event {selectedEvent.step} from the selected {selectedRecording.title} recording.</p>
+                <p>
+                  {selectedEvent
+                    ? `Event ${selectedEvent.seq} from session ${currentSession?.session_id ?? "unknown"}.`
+                    : "Select a recorded action to inspect the session log entry."}
+                </p>
+
+                {selectedEvent && (
+                  <div className="inspector-section">
+                    <div className="section-head">
+                      <h3>Action properties</h3>
+                      <button className="step-toggle" onClick={() => toggleStepDisabled(selectedEvent.seq)} type="button">
+                        {selectedEvent.disabled ? "Enable replay" : "Disable replay"}
+                      </button>
+                    </div>
+                    <dl>
+                      <dt>Action type</dt>
+                      <dd>{selectedEvent.type}</dd>
+                      <dt>Target</dt>
+                      <dd>{selectedEvent.target}</dd>
+                      <dt>Selector</dt>
+                      <dd>{selectedEvent.selector || selectedEvent.element?.selector || "--"}</dd>
+                      <dt>Input value</dt>
+                      <dd>{selectedEvent.type === "input" ? selectedEvent.value || selectedEvent.value_policy || "--" : "--"}</dd>
+                      <dt>Page URL</dt>
+                      <dd>{selectedEvent.url || sessionLog?.target_url || targetUrl}</dd>
+                      <dt>Timestamp</dt>
+                      <dd>{selectedEvent.time}</dd>
+                    </dl>
+                  </div>
+                )}
 
                 <div className="inspector-section">
                   <div className="section-head">
@@ -948,13 +1137,13 @@ const workflowStage: WorkflowStage =
                     <dt>Target</dt>
                     <dd>{targetUrl}</dd>
                     <dt>Session</dt>
-                    <dd>sess_mr0re8sa_8u0xr4</dd>
+                    <dd>{currentSession?.session_id ?? "--"}</dd>
                   </dl>
                 </div>
               </div>
 
               <button className="btn dark block" disabled={isRecording} onClick={beginRecording}>
-                Confirm locally on the Mac <Play {...icon18} aria-hidden="true" />
+                Start another recording <Play {...icon18} aria-hidden="true" />
               </button>
             </aside>
             )}

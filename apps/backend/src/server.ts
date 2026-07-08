@@ -1,11 +1,12 @@
 import express, { type Request, type Response } from "express";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { SessionSummary } from "@trailwise/shared";
+import type { SessionSummary, WorkflowTrace } from "@trailwise/shared";
 import { isAllowedRecordingUrl } from "./allowlist.js";
 import type { BackendConfig } from "./config.js";
 import { generatePlaywrightArtifact, generateRunbookArtifact, generateSkillArtifact } from "./generation.js";
 import { postSlackMessage, slackText, verifySlackSignature } from "./slack.js";
-import { createStore, type JsonStore } from "./store.js";
+import { createStore, type JsonStore, type RecordingSession } from "./store.js";
 import { appendRecordedEvent } from "./trace-recorder.js";
 
 export function createServer(config: BackendConfig, store: JsonStore = createStore(config.dataDir)) {
@@ -223,6 +224,56 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
     response.json({ session: store.getSession(request.params.session_id) });
   });
 
+  app.get("/sessions/:session_id/log", (request, response) => {
+    let session: RecordingSession;
+    try {
+      session = store.getSession(request.params.session_id);
+    } catch {
+      response.status(404).json({
+        code: "session_not_found",
+        message: `Session not found: ${request.params.session_id}`,
+        session_id: request.params.session_id
+      });
+      return;
+    }
+
+    const tracePath = session.summary?.trace_path ?? join(config.dataDir, "sessions", session.session_id, "trace.json");
+    if (!existsSync(tracePath)) {
+      response.json({
+        session,
+        session_id: session.session_id,
+        status: session.status,
+        target_url: session.target_url,
+        started_at: session.started_at ?? session.created_at,
+        stopped_at: session.stopped_at,
+        duration_ms: session.summary?.duration_ms ?? null,
+        events: []
+      });
+      return;
+    }
+
+    try {
+      const trace = JSON.parse(readFileSync(tracePath, "utf8")) as WorkflowTrace;
+      response.json({
+        session,
+        session_id: session.session_id,
+        status: session.status,
+        target_url: trace.target_url,
+        started_at: trace.started_at,
+        stopped_at: trace.stopped_at,
+        duration_ms: trace.duration_ms ?? session.summary?.duration_ms ?? null,
+        events: trace.events,
+        summary: session.summary ?? null
+      });
+    } catch (error) {
+      response.status(500).json({
+        code: "session_log_unreadable",
+        message: error instanceof Error ? error.message : String(error),
+        session_id: session.session_id
+      });
+    }
+  });
+
   app.post("/helper/sessions/:session_id/confirm", (request, response) => {
     response.json({ session: store.updateSession(request.params.session_id, { status: "recording", started_at: new Date().toISOString() }) });
   });
@@ -301,7 +352,7 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
       config,
       store
     });
-    response.json(result);
+    response.json({ ...result, session_id: extractSessionId(result.text) });
   });
 
   app.get("/dev/sessions", (_request, response) => {
@@ -529,6 +580,10 @@ function verifySlackRequest(request: Request, config: BackendConfig): boolean {
     signature: request.header("x-slack-signature"),
     rawBody: request.body
   });
+}
+
+function extractSessionId(text: string | undefined): string | undefined {
+  return text?.match(/Session:\s*(\S+)/i)?.[1];
 }
 
 function handleGenerationError(response: Response, sessionId: string, error: unknown): void {
