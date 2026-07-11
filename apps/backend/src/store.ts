@@ -19,6 +19,7 @@ export interface RecordingSession {
   slack_user_id: string;
   target_url: string;
   device_id?: string;
+  recording_transport?: "helper" | "backend";
   status: SessionStatus;
   created_at: string;
   started_at?: string;

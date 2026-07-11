@@ -7,29 +7,44 @@ import type { BackendConfig } from "./config.js";
 import { generatePlaywrightArtifact, generateRunbookArtifact, generateSkillArtifact } from "./generation.js";
 import { postSlackMessage, slackText, verifySlackSignature } from "./slack.js";
 import { createStore, type JsonStore, type RecordingSession } from "./store.js";
-import { appendRecordedEvent } from "./trace-recorder.js";
+import { appendRecordedEvent, createBackendTrace, finalizeBackendTrace } from "./trace-recorder.js";
+import { spawn } from "node:child_process";
+import { dirname } from "node:path";
 
 export function createServer(config: BackendConfig, store: JsonStore = createStore(config.dataDir)) {
   const app = express();
 
-  app.use((req, res, next)=>{
+  app.use((req, res, next) => {
     const origin = req.header("origin");
 
-    const allowedOrigins = [
+    const allowedWebOrigins = new Set([
       "http://localhost:5173",
       "http://127.0.0.1:5173",
       "http://localhost:5174",
       "http://127.0.0.1:5174",
       "http://localhost:5175",
       "http://127.0.0.1:5175",
-    ];
+    ]);
 
-    if (origin && allowedOrigins.includes(origin)) {
+    const isAllowedChromeExtension =
+      typeof origin === "string" &&
+      origin.startsWith("chrome-extension://");
+
+    if (
+      origin &&
+      (allowedWebOrigins.has(origin) || isAllowedChromeExtension)
+    ) {
       res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+      res.setHeader("Vary", "Origin");
+
+      res.setHeader(
+        "Access-Control-Allow-Methods",
+        "GET, POST, DELETE, OPTIONS",
+      );
+
       res.setHeader(
         "Access-Control-Allow-Headers",
-        "Content-Type, Authorization"
+        "Content-Type, Authorization, X-Helper-Secret",
       );
     }
 
@@ -49,7 +64,7 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
     const url = String(request.body?.event?.url || "");
     const session = store.findLatestRecordingForUrl(url);
     if (!session) {
-      response.status(409).json({ ok: false, reason: "no active recording for event origin" });
+      response.status(202).json({ ok: false, ignored: true, reason: "no active recording for event origin" });
       return;
     }
 
@@ -298,7 +313,9 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
       summary
     });
 
-    await postCompletionSummary(config, session.slack_channel_id, summary);
+    await postCompletionSummary(config, session.slack_channel_id, summary).catch((error) => {
+      console.warn(`Skipping Slack completion summary for ${session.session_id}: ${String(error)}`);
+    });
     response.json({ session });
   });
 
@@ -321,16 +338,87 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
     }
   });
 
-  app.post("/sessions/:session_id/generate-runbook", express.json(), async (request, response) => {
-    const session = store.getSession(request.params.session_id);
-    try {
-      const result = await generateRunbookArtifact(session, config);
-      store.updateSession(session.session_id, { generated_runbook_path: result.artifactPath });
-      response.json(result);
-    } catch (error) {
-      handleGenerationError(response, session.session_id, error);
-    }
-  });
+    app.post("/sessions/:session_id/generate-runbook", express.json(), async (request, response) => {
+        const session = store.getSession(request.params.session_id);
+
+        try {
+        const result = await generateRunbookArtifact(session, config);
+
+        store.updateSession(session.session_id, {
+            generated_runbook_path: result.artifactPath,
+        });
+
+        response.json(result);
+        } catch (error) {
+        handleGenerationError(
+            response,
+            session.session_id,
+            error,
+        );
+        }
+    },
+    );
+    app.get("/sessions/:session_id/runbook", (request, response) => {
+        let session;
+
+        try {
+        session = store.getSession(
+            request.params.session_id,
+        );
+        } catch {
+        response.status(404).json({
+            code: "session_not_found",
+            message: `Session not found: ${request.params.session_id}`,
+            session_id: request.params.session_id,
+        });
+        return;
+        }
+
+        const runbookPath =
+        session.generated_runbook_path;
+
+        if (!runbookPath) {
+        response.status(404).json({
+            code: "runbook_not_generated",
+            message:
+            "This recording session does not have a generated runbook yet.",
+            session_id: session.session_id,
+        });
+        return;
+        }
+
+        if (!existsSync(runbookPath)) {
+        response.status(404).json({
+            code: "runbook_file_missing",
+            message: `Generated runbook file was not found: ${runbookPath}`,
+            session_id: session.session_id,
+        });
+        return;
+        }
+
+        try {
+        const content = readFileSync(
+            runbookPath,
+            "utf8",
+        );
+
+        response.json({
+            session_id: session.session_id,
+            artifact_path: runbookPath,
+            content,
+        });
+        } catch (error) {
+        response.status(500).json({
+            code: "runbook_unreadable",
+            message:
+            error instanceof Error
+                ? error.message
+                : String(error),
+            session_id: session.session_id,
+        });
+        }
+    },
+    );
 
   app.post("/sessions/:session_id/generate-skill", express.json(), async (request, response) => {
     const session = store.getSession(request.params.session_id);
@@ -350,7 +438,8 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
       channelId: String(request.body?.channel_id || "C_LOCAL"),
       userId: String(request.body?.user_id || "U_LOCAL"),
       config,
-      store
+      store,
+      autoStartBackendTrace: true
     });
     response.json({ ...result, session_id: extractSessionId(result.text) });
   });
@@ -359,7 +448,166 @@ export function createServer(config: BackendConfig, store: JsonStore = createSto
     response.json({ sessions: store.listSessions() });
   });
 
+  app.post(
+  "/sessions/:session_id/replay",
+  express.json(),
+  async (request, response) => {
+    let session: RecordingSession;
+
+    try {
+      session = store.getSession(request.params.session_id);
+    } catch {
+      response.status(404).json({
+        code: "session_not_found",
+        message: `Session not found: ${request.params.session_id}`,
+      });
+      return;
+    }
+
+    if (session.status !== "completed") {
+      response.status(409).json({
+        code: "session_not_completed",
+        message: "Complete the recording before replaying it.",
+      });
+      return;
+    }
+
+    if (!session.generated_skill_path) {
+      response.status(409).json({
+        code: "skill_not_generated",
+        message: "Generate the Codex skill before replaying it.",
+      });
+      return;
+    }
+
+    try {
+      const decision =
+        request.body?.decision === "approve" ||
+        request.body?.decision === "escalate"
+          ? request.body.decision
+          : undefined;
+
+      const result = await runReplaySkillCommand({
+        repoRoot: config.repoRoot,
+        skillPath: session.generated_skill_path,
+        targetUrl:
+          String(request.body?.target_url || "") ||
+          session.target_url,
+        expenseId: request.body?.expense_id
+          ? String(request.body.expense_id)
+          : undefined,
+        decision,
+        headless: request.body?.headless === true,
+      });
+
+      response.json({
+        ok: true,
+        session_id: session.session_id,
+        result,
+      });
+    } catch (error) {
+      response.status(500).json({
+        code: "replay_failed",
+        message:
+          error instanceof Error
+            ? error.message
+            : String(error),
+        session_id: session.session_id,
+      });
+    }
+  },
+);
+
   return { app, store };
+}
+
+function runReplaySkillCommand(options: {
+  repoRoot: string;
+  skillPath: string;
+  targetUrl: string;
+  expenseId?: string;
+  decision?: "approve" | "escalate";
+  headless?: boolean;
+}): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const skillDir = options.skillPath.endsWith(".md")
+      ? dirname(options.skillPath)
+      : options.skillPath;
+
+    const args = [
+      "run",
+      "cli",
+      "-w",
+      "@trailwise/dev-helper",
+      "--",
+      "replay-skill",
+      "--skill",
+      skillDir,
+      "--target-url",
+      options.targetUrl,
+      "--browser-channel",
+      "chrome",
+      "--slow-mo",
+      "250",
+    ];
+
+    if (options.expenseId) {
+      args.push("--expense-id", options.expenseId);
+    }
+
+    if (options.decision) {
+      args.push("--decision", options.decision);
+    }
+
+    if (options.headless) {
+      args.push("--headless");
+    }
+
+    const child = spawn("npm", args, {
+      cwd: options.repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    child.on("error", reject);
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(
+          new Error(
+            `Replay command failed with code ${code}: ${stderr || stdout}`,
+          ),
+        );
+        return;
+      }
+
+      try {
+        const jsonStart = stdout.lastIndexOf("\n{");
+        const jsonText =
+          jsonStart >= 0
+            ? stdout.slice(jsonStart + 1)
+            : stdout.trim();
+
+        resolve(JSON.parse(jsonText));
+      } catch {
+        resolve({
+          output: stdout.trim(),
+          stderr: stderr.trim(),
+        });
+      }
+    });
+  });
 }
 
 async function handleSlashCommand(options: {
@@ -369,6 +617,7 @@ async function handleSlashCommand(options: {
   userId: string;
   config: BackendConfig;
   store: JsonStore;
+  autoStartBackendTrace?: boolean;
 }) {
   const [command, ...rest] = options.text.split(/\s+/);
   const argument = rest.join(" ");
@@ -412,6 +661,7 @@ async function handleSlashCommand(options: {
         slack_user_id: options.userId,
         target_url: targetUrl,
         device_id: paired?.device_id,
+        recording_transport: options.autoStartBackendTrace ? "backend" : "helper",
         status: "recording",
         started_at: new Date().toISOString(),
         stopped_at: undefined,
@@ -427,7 +677,29 @@ async function handleSlashCommand(options: {
         slack_user_id: options.userId,
         target_url: targetUrl,
         device_id: paired?.device_id,
+        recording_transport: options.autoStartBackendTrace ? "backend" : "helper"
       });
+    }
+
+    if (options.autoStartBackendTrace) {
+      session = options.store.updateSession(session.session_id, {
+        status: "recording",
+        started_at: session.started_at ?? new Date().toISOString(),
+        stopped_at: undefined,
+        summary: undefined,
+        error: undefined,
+        recording_transport: "backend"
+      });
+      createBackendTrace(options.config, session);
+
+      return slackText(`Recording started.
+
+  Device: ${paired?.name ?? "not connected"}
+  Recorder: Browser extension / backend trace
+  Target: ${targetUrl}
+  Session: ${session.session_id}
+
+  Perform the workflow, then stop recording.`);
     }
 
     return slackText(`Ready to record Chrome workflow.
@@ -451,6 +723,19 @@ async function handleSlashCommand(options: {
 
     if (!session) {
       return slackText("No recording session found.");
+    }
+
+    if (session.recording_transport === "backend") {
+      const summary = finalizeBackendTrace(options.config, session);
+      options.store.updateSession(session.session_id, {
+        status: "completed",
+        stopped_at: new Date().toISOString(),
+        summary
+      });
+
+      return slackText(
+        `Recording completed for ${session.session_id}. Trace: ${summary.trace_path}`
+      );
     }
 
     options.store.updateSession(session.session_id, {
