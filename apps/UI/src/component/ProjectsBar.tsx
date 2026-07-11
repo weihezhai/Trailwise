@@ -1,17 +1,11 @@
 import { useEffect } from "react";
 import ProjectCard from "./ProjectCard";
 
-interface SidebarSession {
-  session_id: string;
-  status: string;
-  target_url?: string;
-}
-
 interface ProjectsBarProps {
-  sessions: SidebarSession[];
-  loadSessions: () => Promise<unknown> | unknown;
-  onOpen: (session: SidebarSession) => void;
-  currentSession: SidebarSession | null;
+  sessions: Array<{ session_id: string; status: string }>;
+  loadSessions: () => Promise<void> | void;
+  onOpen: (session: { session_id: string; status: string }) => void;
+  currentSession: { session_id: string; status?: string } | null;
 }
 
 export default function ProjectsBar({

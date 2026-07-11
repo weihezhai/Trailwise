@@ -1,16 +1,10 @@
 import ProjectsBar from "./ProjectsBar";
 
-interface SidebarSession {
-  session_id: string;
-  status: string;
-  target_url?: string;
-}
-
 interface WorkspaceSidebarProps {
-  sessions: SidebarSession[];
-  currentSession: SidebarSession | null;
-  loadSessions: () => Promise<unknown>;
-  onOpenSession: (session: SidebarSession) => void;
+  sessions: any[];
+  currentSession: any;
+  loadSessions: () => Promise<void>;
+  onOpenSession: (session: any) => void;
 }
 
 export default function WorkspaceSidebar({
